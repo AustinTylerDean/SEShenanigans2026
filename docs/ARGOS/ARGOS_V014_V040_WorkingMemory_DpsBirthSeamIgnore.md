@@ -1,81 +1,44 @@
-# ARGOS Working Memory V014 / V040 - DPS Birth Seam Ignore
+# ARGOS V014/V040 Working Memory — DPS Birth Seam Ignore
 
-## Purpose
+## Patch summary
 
-This note records the ARGOS refinement made after LDC1 ARGOS V036 correctly failed safe, but too aggressively suspended AutoTag when a printed drone/test article was merged to a DPS bay birth seam.
+LDC1 ARGOS now has a targeted V037 refinement for DPS drone-bay birth seams.
 
-## Observed problem
+Previous V036 behavior:
 
-LDC1 ARGOS V036 reported:
+- ARGOS correctly treated connected merge blocks as hard ownership firewalls.
+- ARGOS allowed local dynamic seams only when one endpoint was local `[LDC1]` and the far endpoint had no leading tag.
+- After DCS assigned a printed drone serial such as `[LDC1-T2A10]`, the far merge endpoint was no longer untagged.
+- Result: ARGOS saw the Bay10 seam `-1/5/1<>-2/5/1` as an unknown seam and suspended AutoTag, even though it still did not tag the drone.
 
-```text
-ARGOS V036 LDC1
-Tag: SUSP auto ON tagNew ON dryrunOK NO
-Tag stop: unknown merge seam -1/5/1<>-2/5/1
-Scope: grids 31/31 mech 30/30 merges 4/2 amb 0 blk 0 dyn 0
-Firewall: TRACE far 0 amb 0
-```
+V037 refinement:
 
-The seam coordinates matched the Bay10 DPS/drone merge pair previously logged by the temporary grid ID logger:
+- ARGOS ignores scope-acceptance pressure from DPS birth seams when exactly one merge endpoint is a DPS bay merge and the opposite endpoint is either untagged or carries a DCS-generated serial tag such as `[LDC1-T2A10]`.
+- The far side remains firewalled. This patch does not make drone-side blocks local.
+- This only prevents global AutoTag suspension for expected production/drone-birth seams.
 
-```text
-Bay merge:   -1,5,1
-Drone merge: -2,5,1
-```
+## Boundary rule
 
-ARGOS was not tagging the drone. It was suspending AutoTag because the connected merge seam was not part of the accepted ARGOS scope.
+A seam is treated as a DPS birth seam only when:
 
-## Root cause
+- one endpoint starts with the local entity tag;
+- that local endpoint contains `[DPS]`;
+- that local endpoint contains `[BAY`;
+- the opposite endpoint is untagged or has a DCS serial-style leading tag formed from the local entity tag plus dash, e.g. `[LDC1-T2A10]`.
 
-V036’s dynamic local seam ignore logic was written for the earlier expectation that the far/printed side of a safe production seam would be untagged. The current DCS/Drone birth flow names the drone side with a serial identity such as:
+This avoids accepting arbitrary foreign merge seams.
 
-```text
-[LDC1-T2A10] MERGE 01
-```
+## Authority impact
 
-That is not an ARGOS local entity tag, but it is also not untagged. V036 therefore treated the seam as unknown.
-
-## V037 refinement
-
-ARGOS V037 recognizes expected DPS birth seams when:
-
-```text
-one endpoint is local [LDC1] [DPS] [BAY##] merge hardware
-other endpoint is either untagged or carries a DCS serial tag like [LDC1-T2A10]
-```
-
-This prevents global AutoTag suspension for expected DPS production/birth seams.
-
-## Boundary preserved
-
-This does not make the drone side local.
-
-The merge firewall remains authoritative:
-
-```text
-local side remains ARGOS/LDC1 local
-far side remains firewalled/skipped
-ambiguous remains skipped
-```
-
-ARGOS still must not tag printed drone hardware during birth.
-
-## Authority doctrine
-
-- ARGOS owns entity identity/access/watchkeeping.
-- DPS owns bay/factory hardware.
-- DCS owns drone birth/control orchestration.
-- Drone PB owns post-heartbeat internal custody.
-- DPS production merge seams are expected dynamic seams, not unknown ARGOS topology changes.
+- ARGOS still owns entity identity and AutoTag safety.
+- DPS still owns bay/factory hardware.
+- DCS/drone serial tags are treated as expected disposable drone identity, not local ARGOS ownership.
+- No ADS door behavior is changed.
 
 ## Test expectation
 
-With a Bay10 drone/test article merged:
+With a Bay10 printed drone/test article merged and DCS-named:
 
-```text
-Tag stop: unknown merge seam -1/5/1<>-2/5/1
-```
-
-should clear.
-
-ARGOS should continue AutoTag maintenance on local LDC1 blocks and still skip printed drone/test article hardware.
+- ARGOS should not report `Tag stop: unknown merge seam -1/5/1<>-2/5/1`.
+- AutoTag should remain active if the rest of scope is clean.
+- Drone-side blocks should remain skipped/firewalled, not tagged by ARGOS.

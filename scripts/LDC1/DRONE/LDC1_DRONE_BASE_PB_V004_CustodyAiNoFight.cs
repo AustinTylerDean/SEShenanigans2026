@@ -1,227 +1,63 @@
-// LDC1 DRONE BASE PB V004 - CustodyAiNoFight
-// Temporary/base newborn drone PB for DCS birth registration testing.
-// Owns post-heartbeat drone-internal custody. DCS may perform one birth firebreak,
-// but this PB owns ongoing captive safe state while assigned.
+// LDC1 DRONE BASE PB V004 CUSTODY AI NO-FIGHT
+// Base onboard drone infrastructure: DCS assignment read, heartbeat, captive/service safe enforcement, and post-merge self-naming scaffold.
+// Scope: no combat, no launch flight, no AI engagement, no connector release authority.
 
 const string VERSION="LDC1_DRONE_BASE_PB_V004_CustodyAiNoFight";
-const string SEC_ASSIGN="[DRONE_ASSIGN]";
-const string SEC_STATUS="[DRONE_STATUS]";
+const string DEFAULT_IGC_TAG="DRONE";
+const string ASSIGN_HDR="[DRONE_ASSIGN]";
+const string STATUS_HDR="[DRONE_STATUS]";
 
-string Origin="",Serial="",Role="",Short="",Wave="",Bay="",Slot="",Departure="";
-bool Assigned=false;
-bool SelfNamed=false;
-string State="IDLE";
-string Fault="";
-int Tick=0;
-int ScanTick=0;
-int HiInstr=0;
-string HiPhase="";
+string Serial="",Origin="",Role="DRONE",Short="D",Slot="",Wave="A",Vector="",Departure="";
+int Bay=0,Tick=0,Seq=0,Hi=0,HiCap=0; string State="ASSIGN_WAIT",Fault="",HiPhase="INIT",HiCapPhase="INIT",LastCmd="";
+bool Assigned=false,SelfNamed=false;
 
-List<IMyBatteryBlock> Bats=new List<IMyBatteryBlock>();
-List<IMyGasTank> Tanks=new List<IMyGasTank>();
-List<IMyThrust> Thr=new List<IMyThrust>();
-List<IMyGyro> Gyros=new List<IMyGyro>();
-List<IMyFunctionalBlock> Ais=new List<IMyFunctionalBlock>();
-List<IMyRadioAntenna> Ants=new List<IMyRadioAntenna>();
+List<IMyTerminalBlock> Blocks=new List<IMyTerminalBlock>();
 List<IMyShipMergeBlock> Merges=new List<IMyShipMergeBlock>();
-List<IMyShipConnector> Cons=new List<IMyShipConnector>();
+List<IMyShipConnector> Conns=new List<IMyShipConnector>();
+List<IMyBatteryBlock> Batteries=new List<IMyBatteryBlock>();
+List<IMyGasTank> Tanks=new List<IMyGasTank>();
+List<IMyThrust> Thrusters=new List<IMyThrust>();
+List<IMyGyro> Gyros=new List<IMyGyro>();
+List<IMyRadioAntenna> Ants=new List<IMyRadioAntenna>();
+List<IMyCameraBlock> Cams=new List<IMyCameraBlock>();
+List<IMyRemoteControl> Remotes=new List<IMyRemoteControl>();
+List<IMyFunctionalBlock> AiBlocks=new List<IMyFunctionalBlock>();
 
-public Program(){Runtime.UpdateFrequency=UpdateFrequency.Update100;LoadAssign();ScanLocal();}
+public Program(){Runtime.UpdateFrequency=UpdateFrequency.Update100;LoadAssign();ScanLocal();ApplyCaptiveSafe();WriteStatus();Heartbeat();}
+public void Save(){WriteStatus();}
+public void Main(string arg,UpdateType src){Upd("START");if(arg!=null&&arg.Trim().Length>0)Cmd(arg.Trim());else Auto();EchoOut();Upd("END");}
 
-public void Main(string arg,UpdateType src){
-    Tick++;
-    string a=(arg??"").Trim().ToUpperInvariant();
-    if(a=="BOOT"){LoadAssign();ScanLocal();ApplyCaptiveSafe();WriteStatus();EchoStatus("BOOT");return;}
-    if(a=="SCAN"){LoadAssign();ScanLocal();WriteStatus();EchoStatus("SCAN");return;}
-    if(a=="STATUS"||a==""){Auto();return;}
-    if(a=="CLEAR"){ClearAssign();ScanLocal();WriteStatus();EchoStatus("CLEAR");return;}
-    Auto();
-}
+void Cmd(string a){LastCmd=a;string u=a.ToUpper().Trim();if(u=="STATUS"){LoadAssign();ScanLocal();UpdateState();WriteStatus();Heartbeat();return;}if(u=="BOOT"||u=="SAFE"){LoadAssign();ScanLocal();UpdateState();ApplyCaptiveSafe();WriteStatus();Heartbeat();return;}if(u=="SELFNAME"){LoadAssign();ScanLocal();UpdateState();if(CanSelfName())SelfName();WriteStatus();Heartbeat();return;}Fault="UNKNOWN_CMD";WriteStatus();Heartbeat();}
+void Auto(){Tick++;LoadAssign();if(Tick%2==0)ScanLocal();UpdateState();if(Assigned)ApplyCaptiveSafe();if(State=="SERVICE_LOCKED"&&!SelfNamed)SelfName();WriteStatus();Heartbeat();}
 
-void Auto(){
-    LoadAssign();
-    if((ScanTick++%2)==0)ScanLocal();
-    UpdateState();
-    if(Assigned)ApplyCaptiveSafe();
-    WriteStatus();
-    EchoStatus("AUTO");
-}
+void LoadAssign(){string cd=Section(Me.CustomData,ASSIGN_HDR);Serial=Val(cd,"Serial=");Origin=Val(cd,"Origin=");Role=Val(cd,"Role=");Short=Val(cd,"Short=");Slot=Val(cd,"Slot=");Wave=Val(cd,"Wave=");Vector=Val(cd,"Vector=");Departure=Val(cd,"Departure=");Bay=ToInt(Val(cd,"Bay="));if(Role=="")Role="DRONE";if(Short=="")Short="D";if(Wave=="")Wave="A";Assigned=Serial.Length>0&&Bay>0;if(!Assigned&&Fault=="")Fault="NO_ASSIGNMENT";if(Assigned&&Fault=="NO_ASSIGNMENT")Fault="";}
 
-void LoadAssign(){
-    string cd=Me.CustomData??"";
-    Origin=Val(cd,"Origin=");
-    Serial=Val(cd,"Serial=");
-    Role=Val(cd,"Role=");
-    Short=Val(cd,"Short=");
-    Wave=Val(cd,"Wave=");
-    Bay=Val(cd,"Bay=");
-    Slot=Val(cd,"Slot=");
-    Departure=Val(cd,"Departure=");
-    Assigned=Serial.Length>0;
-    if(Assigned&&!SelfNamed)TrySelfName();
-}
+void ScanLocal(){Blocks.Clear();Merges.Clear();Conns.Clear();Batteries.Clear();Tanks.Clear();Thrusters.Clear();Gyros.Clear();Ants.Clear();Cams.Clear();Remotes.Clear();AiBlocks.Clear();GridTerminalSystem.GetBlocksOfType<IMyTerminalBlock>(Blocks,SameGrid);for(int i=0;i<Blocks.Count;i++){IMyTerminalBlock b=Blocks[i];IMyShipMergeBlock m=b as IMyShipMergeBlock;if(m!=null){Merges.Add(m);continue;}IMyShipConnector c=b as IMyShipConnector;if(c!=null){Conns.Add(c);continue;}IMyBatteryBlock bat=b as IMyBatteryBlock;if(bat!=null){Batteries.Add(bat);continue;}IMyGasTank t=b as IMyGasTank;if(t!=null){Tanks.Add(t);continue;}IMyThrust th=b as IMyThrust;if(th!=null){Thrusters.Add(th);continue;}IMyGyro g=b as IMyGyro;if(g!=null){Gyros.Add(g);continue;}IMyRadioAntenna an=b as IMyRadioAntenna;if(an!=null){Ants.Add(an);continue;}IMyCameraBlock cam=b as IMyCameraBlock;if(cam!=null){Cams.Add(cam);continue;}IMyRemoteControl r=b as IMyRemoteControl;if(r!=null){Remotes.Add(r);continue;}if(IsAiBlock(b))AiBlocks.Add((IMyFunctionalBlock)b);}}
+bool SameGrid(IMyTerminalBlock b){return b!=null&&b.CubeGrid==Me.CubeGrid;}
 
-void ClearAssign(){
-    Origin="";Serial="";Role="";Short="";Wave="";Bay="";Slot="";Departure="";Assigned=false;SelfNamed=false;State="IDLE";Fault="";
-    Me.CustomData=ReplaceSection(Me.CustomData??"",SEC_ASSIGN,"",false);
-}
+void UpdateState(){bool mergeConnected=false;for(int i=0;i<Merges.Count;i++){try{if(Merges[i].IsConnected)mergeConnected=true;}catch{}}bool connLocked=false;for(int i=0;i<Conns.Count;i++){try{if(Conns[i].Status==MyShipConnectorStatus.Connected)connLocked=true;}catch{}}if(!Assigned){State="ASSIGN_WAIT";return;}if(mergeConnected){State="MERGED_SAFE";return;}if(connLocked){State="SERVICE_LOCKED";return;}State="FREE_SAFE";}
+bool CanSelfName(){UpdateState();return Assigned&&(State=="SERVICE_LOCKED"||State=="FREE_SAFE");}
 
-void TrySelfName(){
-    if(Serial.Length<1)return;
-    string tag="["+Origin+"-"+Serial+"]";
-    if(Me.CustomName.IndexOf(tag,StringComparison.OrdinalIgnoreCase)<0)Me.CustomName=tag+" PB";
-    for(int i=0;i<Bats.Count;i++)NameOne(Bats[i],tag,"BAT "+(i+1).ToString("00"));
-    for(int i=0;i<Tanks.Count;i++)NameOne(Tanks[i],tag,"H2 "+(i+1).ToString("00"));
-    for(int i=0;i<Thr.Count;i++)NameOne(Thr[i],tag,"THR "+(i+1).ToString("00"));
-    for(int i=0;i<Gyros.Count;i++)NameOne(Gyros[i],tag,"GYRO "+(i+1).ToString("00"));
-    for(int i=0;i<Ais.Count;i++)NameOne(Ais[i],tag,"AI "+(i+1).ToString("00"));
-    for(int i=0;i<Ants.Count;i++)NameOne(Ants[i],tag,"ANT "+(i+1).ToString("00"));
-    for(int i=0;i<Merges.Count;i++)NameOne(Merges[i],tag,"MERGE "+(i+1).ToString("00"));
-    for(int i=0;i<Cons.Count;i++)NameOne(Cons[i],tag,"CONN "+(i+1).ToString("00"));
-    SelfNamed=true;
-}
+void ApplyCaptiveSafe(){for(int i=0;i<Batteries.Count;i++){try{if(Batteries[i].ChargeMode!=ChargeMode.Recharge)Batteries[i].ChargeMode=ChargeMode.Recharge;}catch{}}for(int i=0;i<Tanks.Count;i++){try{if(!Tanks[i].Stockpile)Tanks[i].Stockpile=true;}catch{}}for(int i=0;i<Thrusters.Count;i++){try{if(Thrusters[i].ThrustOverridePercentage!=0f)Thrusters[i].ThrustOverridePercentage=0f;if(Thrusters[i].Enabled)Thrusters[i].Enabled=false;}catch{}}for(int i=0;i<Gyros.Count;i++){try{if(Gyros[i].GyroOverride)Gyros[i].GyroOverride=false;if(Gyros[i].Enabled)Gyros[i].Enabled=false;}catch{}}for(int i=0;i<AiBlocks.Count;i++)SafeAi(AiBlocks[i]);for(int i=0;i<Ants.Count;i++){try{if(!Ants[i].Enabled)Ants[i].Enabled=true;if(!Ants[i].EnableBroadcasting)Ants[i].EnableBroadcasting=true;}catch{}}}
+void SafeAi(IMyFunctionalBlock f){if(f==null)return;try{if(f.Enabled)f.Enabled=false;}catch{}}
+void TryAct(IMyTerminalBlock b,string a){try{b.ApplyAction(a);}catch{}}
 
-void NameOne(IMyTerminalBlock b,string tag,string suffix){
-    if(b==null)return;
-    if(b.CustomName.IndexOf(tag,StringComparison.OrdinalIgnoreCase)>=0)return;
-    if(HasLeadingTag(b.CustomName))return;
-    b.CustomName=tag+" "+suffix;
-}
+void SelfName(){if(!Assigned)return;string p="["+(Origin!=""?Origin+"-":"")+Serial+"] ";NameFirst(Me,p+"PB");NameList(Ants,p+"ANT");NameList(Remotes,p+"RC");NameList(Cams,p+"CAM");NameList(Conns,p+"CONN");NameList(Merges,p+"MERGE");NameList(Gyros,p+"GYRO");NameList(Thrusters,p+"THR");NameList(Batteries,p+"BAT");NameList(Tanks,p+"H2");NameAi(p);SelfNamed=true;}
+void NameAi(string p){int n=1;for(int i=0;i<AiBlocks.Count;i++){IMyTerminalBlock b=AiBlocks[i] as IMyTerminalBlock;if(b==null)continue;string t=b.BlockDefinition.TypeIdString+"/"+b.BlockDefinition.SubtypeName;string role=t.ToUpper().Contains("OFFENSIVE")?"AIO":(t.ToUpper().Contains("FLIGHT")?"AIF":"AI");b.CustomName=p+role+(n<10?" 0":" ")+n;n++;}}
+void NameFirst(IMyTerminalBlock b,string n){if(b!=null)try{b.CustomName=n;}catch{}}
+void NameList<T>(List<T> l,string label) where T:class,IMyTerminalBlock{for(int i=0;i<l.Count;i++){try{l[i].CustomName=label+(i+1<10?" 0":" ")+(i+1);}catch{}}}
 
-bool HasLeadingTag(string s){
-    s=s??"";
-    s=s.TrimStart();
-    return s.StartsWith("[")&&s.IndexOf(']')>1;
-}
+bool IsAiBlock(IMyTerminalBlock b){if(!(b is IMyFunctionalBlock))return false;string s=(b.BlockDefinition.TypeIdString+"/"+b.BlockDefinition.SubtypeName).ToUpper();return s.Contains("OFFENSIVE")||s.Contains("FLIGHTMOVEMENT")||s.Contains("FLIGHT");}
 
-void ScanLocal(){
-    Bats.Clear();Tanks.Clear();Thr.Clear();Gyros.Clear();Ais.Clear();Ants.Clear();Merges.Clear();Cons.Clear();
-    var all=new List<IMyTerminalBlock>();
-    GridTerminalSystem.GetBlocks(all);
-    for(int i=0;i<all.Count;i++){
-        var b=all[i];
-        if(b==null||b.CubeGrid!=Me.CubeGrid)continue;
-        var bat=b as IMyBatteryBlock;if(bat!=null){Bats.Add(bat);continue;}
-        var tank=b as IMyGasTank;if(tank!=null){Tanks.Add(tank);continue;}
-        var th=b as IMyThrust;if(th!=null){Thr.Add(th);continue;}
-        var gy=b as IMyGyro;if(gy!=null){Gyros.Add(gy);continue;}
-        var ant=b as IMyRadioAntenna;if(ant!=null){Ants.Add(ant);continue;}
-        var m=b as IMyShipMergeBlock;if(m!=null){Merges.Add(m);continue;}
-        var c=b as IMyShipConnector;if(c!=null){Cons.Add(c);continue;}
-        var f=b as IMyFunctionalBlock;
-        if(f!=null&&IsAiBlock(b))Ais.Add(f);
-    }
-    if(Assigned&&!SelfNamed)TrySelfName();
-}
+void Heartbeat(){Seq++;StringBuilder sb=new StringBuilder();sb.Append("Serial=").Append(Serial).Append(";Origin=").Append(Origin).Append(";Bay=").Append(Bay).Append(";Role=").Append(Role).Append(";Short=").Append(Short).Append(";Wave=").Append(Wave).Append(";State=").Append(State).Append(";Seq=").Append(Seq).Append(";Safe=YES;Fault=").Append(Fault).Append(";BAT=").Append(BatPct()).Append(";H2=").Append(H2Pct());IGC.SendBroadcastMessage(DEFAULT_IGC_TAG,sb.ToString(),TransmissionDistance.TransmissionDistanceMax);if(Serial.Length>0)IGC.SendBroadcastMessage("DRONE:"+Serial,sb.ToString(),TransmissionDistance.TransmissionDistanceMax);}
+int BatPct(){double cur=0,max=0;for(int i=0;i<Batteries.Count;i++){try{cur+=Batteries[i].CurrentStoredPower;max+=Batteries[i].MaxStoredPower;}catch{}}return max>0?(int)Math.Round(cur/max*100):0;}
+int H2Pct(){double cur=0,max=0;for(int i=0;i<Tanks.Count;i++){try{cur+=Tanks[i].FilledRatio;max+=1;}catch{}}return max>0?(int)Math.Round(cur/max*100):0;}
 
-bool IsAiBlock(IMyTerminalBlock b){
-    string d=(b.BlockDefinition.TypeIdString+"/"+b.BlockDefinition.SubtypeId+"/"+b.DefinitionDisplayNameText+"/"+b.CustomName).ToLowerInvariant();
-    return d.IndexOf("offensive")>=0||d.IndexOf("defensive")>=0||d.IndexOf("ai")>=0&&d.IndexOf("flight")>=0;
-}
+void WriteStatus(){StringBuilder st=new StringBuilder();st.Append(STATUS_HDR).Append('\n');st.Append("Version=").Append(VERSION).Append('\n');st.Append("Origin=").Append(Origin).Append('\n');st.Append("Serial=").Append(Serial).Append('\n');st.Append("Role=").Append(Role).Append('\n');st.Append("Short=").Append(Short).Append('\n');st.Append("Wave=").Append(Wave).Append('\n');st.Append("Bay=").Append(Bay).Append('\n');st.Append("Slot=").Append(Slot).Append('\n');st.Append("Departure=").Append(Departure).Append('\n');st.Append("State=").Append(State).Append('\n');st.Append("Assigned=").Append(Assigned?"YES":"NO").Append('\n');st.Append("SelfNamed=").Append(SelfNamed?"YES":"NO").Append('\n');st.Append("BatteryPct=").Append(BatPct()).Append('\n');st.Append("H2Pct=").Append(H2Pct()).Append('\n');st.Append("Blocks=").Append(Blocks.Count).Append(" M=").Append(Merges.Count).Append(" C=").Append(Conns.Count).Append(" BAT=").Append(Batteries.Count).Append(" H2=").Append(Tanks.Count).Append(" THR=").Append(Thrusters.Count).Append(" GYRO=").Append(Gyros.Count).Append(" AI=").Append(AiBlocks.Count).Append('\n');st.Append("Fault=").Append(Fault).Append('\n');st.Append("PerfLast=").Append(Hi).Append('/').Append(50000).Append(' ').Append(HiPhase).Append('\n');st.Append("PerfMax=").Append(HiCap).Append('/').Append(50000).Append(' ').Append(HiCapPhase).Append('\n');Me.CustomData=RenderCustomData(Section(Me.CustomData,ASSIGN_HDR),st.ToString());}
+string RenderCustomData(string assign,string status){StringBuilder s=new StringBuilder();if(assign!=null&&assign.Trim().Length>0)s.Append(assign.Trim()).Append("\n\n");s.Append(status.Trim()).Append("\n");return s.ToString();}
+string Section(string cd,string header){if(cd==null)return"";int a=cd.IndexOf(header);if(a<0)return"";int n=cd.IndexOf("\n[",a+header.Length);if(n<0)n=cd.Length;return cd.Substring(a,n-a).Trim();}
 
-void UpdateState(){
-    Fault="";
-    if(!Assigned){State="IDLE";return;}
-    bool mergeConnected=false;
-    for(int i=0;i<Merges.Count;i++)if(Merges[i]!=null&&Merges[i].IsConnected)mergeConnected=true;
-    bool connectorLocked=false;
-    for(int i=0;i<Cons.Count;i++)if(Cons[i]!=null&&Cons[i].Status==MyShipConnectorStatus.Connected)connectorLocked=true;
-    if(mergeConnected)State="MERGED_SAFE";
-    else if(connectorLocked)State="SERVICE_LOCKED";
-    else State="FREE";
-}
-
-void ApplyCaptiveSafe(){
-    StartPhase("SAFE");
-    for(int i=0;i<Bats.Count;i++)SafeBat(Bats[i]);
-    for(int i=0;i<Tanks.Count;i++)SafeTank(Tanks[i]);
-    for(int i=0;i<Thr.Count;i++)SafeThrust(Thr[i]);
-    for(int i=0;i<Gyros.Count;i++)SafeGyro(Gyros[i]);
-    for(int i=0;i<Ais.Count;i++)SafeAi(Ais[i]);
-    for(int i=0;i<Ants.Count;i++)SafeAnt(Ants[i]);
-    EndPhase("SAFE");
-}
-
-void SafeBat(IMyBatteryBlock b){if(b==null)return;if(b.ChargeMode!=ChargeMode.Recharge)b.ChargeMode=ChargeMode.Recharge;}
-void SafeTank(IMyGasTank t){if(t==null)return;if(!t.Stockpile)t.Stockpile=true;}
-void SafeThrust(IMyThrust t){if(t==null)return;if(t.ThrustOverridePercentage!=0)t.ThrustOverridePercentage=0;if(t.Enabled)t.Enabled=false;}
-void SafeGyro(IMyGyro g){if(g==null)return;if(g.GyroOverride)g.GyroOverride=false;if(g.Enabled)g.Enabled=false;}
-void SafeAi(IMyFunctionalBlock f){if(f==null)return;if(f.Enabled)f.Enabled=false;}
-void SafeAnt(IMyRadioAntenna a){if(a==null)return;if(!a.Enabled)a.Enabled=true;if(!a.EnableBroadcasting)a.EnableBroadcasting=true;}
-
-void WriteStatus(){
-    StartPhase("WRITE");
-    var s=new StringBuilder();
-    s.AppendLine(SEC_STATUS);
-    s.AppendLine("Version="+VERSION);
-    s.AppendLine("Origin="+Origin);
-    s.AppendLine("Serial="+Serial);
-    s.AppendLine("Role="+Role);
-    s.AppendLine("Short="+Short);
-    s.AppendLine("Wave="+Wave);
-    s.AppendLine("Bay="+Bay);
-    s.AppendLine("Slot="+Slot);
-    s.AppendLine("Departure="+Departure);
-    s.AppendLine("State="+State);
-    s.AppendLine("Assigned="+(Assigned?"YES":"NO"));
-    s.AppendLine("SelfNamed="+(SelfNamed?"YES":"NO"));
-    s.AppendLine("BatteryPct="+F(BatPct()));
-    s.AppendLine("H2Pct="+F(H2Pct()));
-    s.AppendLine("Blocks="+(Bats.Count+Tanks.Count+Thr.Count+Gyros.Count+Ais.Count+Ants.Count+Merges.Count+Cons.Count)+" M="+Merges.Count+" C="+Cons.Count+" BAT="+Bats.Count+" H2="+Tanks.Count+" THR="+Thr.Count+" GYRO="+Gyros.Count+" AI="+Ais.Count);
-    s.AppendLine("Fault="+Fault);
-    s.AppendLine("PerfLast="+Runtime.CurrentInstructionCount+"/50000 "+HiPhase);
-    s.AppendLine("PerfMax="+HiInstr+"/50000 "+HiPhase);
-    string next=ReplaceSection(Me.CustomData??"",SEC_STATUS,s.ToString(),true);
-    if(next!=Me.CustomData)Me.CustomData=next;
-    EndPhase("WRITE");
-}
-
-string ReplaceSection(string cd,string header,string body,bool keepOther){
-    int p=cd.IndexOf(header,StringComparison.OrdinalIgnoreCase);
-    if(p<0)return keepOther?(cd.TrimEnd()+"\n\n"+body).TrimStart():body;
-    int e=cd.IndexOf("\n[",p+header.Length,StringComparison.Ordinal);
-    if(e<0)e=cd.Length;
-    string pre=cd.Substring(0,p).TrimEnd();
-    string post=cd.Substring(e).TrimStart();
-    var s=new StringBuilder();
-    if(pre.Length>0)s.AppendLine(pre).AppendLine();
-    s.Append(body.TrimEnd()).AppendLine();
-    if(post.Length>0)s.AppendLine().Append(post);
-    return s.ToString();
-}
-
-string Val(string cd,string key){
-    int p=cd.IndexOf(key,StringComparison.OrdinalIgnoreCase);
-    if(p<0)return "";
-    p+=key.Length;
-    int e=cd.IndexOf('\n',p);
-    if(e<0)e=cd.Length;
-    return cd.Substring(p,e-p).Trim().Trim('\r');
-}
-
-float BatPct(){
-    double cur=0,max=0;
-    for(int i=0;i<Bats.Count;i++){var b=Bats[i];if(b==null)continue;cur+=b.CurrentStoredPower;max+=b.MaxStoredPower;}
-    if(max<=0)return 0;
-    return (float)(cur/max*100.0);
-}
-
-float H2Pct(){
-    double cur=0,max=0;
-    for(int i=0;i<Tanks.Count;i++){var t=Tanks[i];if(t==null)continue;cur+=t.FilledRatio;max+=1;}
-    if(max<=0)return 0;
-    return (float)(cur/max*100.0);
-}
-
-void EchoStatus(string phase){
-    Echo("DRONE BASE PB V004");
-    Echo("Serial "+(Serial.Length>0?Serial:"-"));
-    Echo("State "+State+" Assigned "+(Assigned?"YES":"NO"));
-    Echo("BAT "+F(BatPct())+" H2 "+F(H2Pct()));
-    Echo("M"+Merges.Count+" C"+Cons.Count+" T"+Thr.Count+" G"+Gyros.Count+" AI"+Ais.Count);
-    Echo("Instr "+Runtime.CurrentInstructionCount+" hi "+HiInstr+" "+HiPhase);
-}
-
-string F(double v){return v.ToString("0.#");}
-void StartPhase(string p){}
-void EndPhase(string p){int c=Runtime.CurrentInstructionCount;if(c>HiInstr){HiInstr=c;HiPhase=p;}}
+void EchoOut(){Echo("DRONE V004");Echo("SER "+(Serial==""?"-":Serial)+" BAY "+Bay+" W "+Wave);Echo("STATE "+State+" FAULT "+(Fault==""?"-":Fault));Echo("BAT "+BatPct()+" H2 "+H2Pct()+" BLK "+Blocks.Count);Echo("PERF "+(Hi/1000.0).ToString("0.0")+"K max "+(HiCap/1000.0).ToString("0.0")+"K "+HiCapPhase);}
+void Upd(string p){int n=Runtime.CurrentInstructionCount;if(n>Hi){Hi=n;HiPhase=p;}if(n>HiCap){HiCap=n;HiCapPhase=p;}}
+string Val(string cd,string key){int i=cd.IndexOf(key);if(i<0)return"";i+=key.Length;int e=cd.IndexOf('\n',i);if(e<0)e=cd.Length;return cd.Substring(i,e-i).Trim();}
+int ToInt(string s){int v=0;int.TryParse(s,out v);return v;}
